@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Stock Predictions</title>
+</head>
+<body>
+    <h1>Stock Price Predictions</h1>
+    <table border="1" cellpadding="8">
+        <tr>
+            <th>Stock</th>
+            <th>Predicted Price</th>
+        </tr>
+        {% for stock, price in predictions.items() %}
+        <tr>
+            <td>{{ stock }}</td>
+            <td>${{ price }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+</html>
