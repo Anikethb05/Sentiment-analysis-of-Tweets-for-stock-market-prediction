@@ -243,7 +243,7 @@ def train_model(stock):
     feature_size = X_train.shape[2]
     output_dim = 1
 
-    # Step 8: Build and train model
+    #Step 8: Build and train model
     model = tf.keras.Sequential([
         LSTM(units=1024, return_sequences=True, input_shape=(input_dim, feature_size), recurrent_dropout=0.3),
         LSTM(units=512, return_sequences=True, recurrent_dropout=0.3),
@@ -255,6 +255,8 @@ def train_model(stock):
         Dense(8),
         Dense(units=output_dim)
     ])
+
+    
 
     model.compile(optimizer='adam', loss='mean_squared_error')
     early_stop = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
