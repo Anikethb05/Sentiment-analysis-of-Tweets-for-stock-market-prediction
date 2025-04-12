@@ -1,0 +1,74 @@
+# def train_model(stock):
+#     df = pd.read_csv('stock_tweets.csv')
+#     df[['sentiment_score', 'Negative', 'Neutral', 'Positive']] = df['Tweet'].apply(get_sentiment)
+#     stock_name = stock.upper()
+#     amzn_df = df[df['Stock Name'] == stock_name].copy()
+#     amzn_df['Date'] = pd.to_datetime(amzn_df['Date'])
+#     amzn_df['Date'] = amzn_df['Date'].dt.date
+#     daily_sentiment = amzn_df.groupby('Date').mean(numeric_only=True)
+    
+#     all_stocks = pd.read_csv('stock_yfinance_data.csv')
+#     stock_df = all_stocks[all_stocks['Stock Name'] == 'AMZN']
+#     stock_df['Date'] = pd.to_datetime(stock_df['Date'])
+
+#     tech_df = get_tech_ind(stock_df)
+#     stock_df = tech_df.iloc[20:,:].reset_index(drop=True)
+
+#     stock_df.set_index('Date', inplace=True)
+#     merged_df = stock_df.merge(daily_sentiment, left_index=True, right_index=True, how='inner')
+
+#     scaled_df= merged_df[['MA7', 'MA20', 'MA10', 'MACD', '20SD', 'upper_band', 'lower_band',
+#        'EMA', 'logmomentum','sentiment_score', 'Negative', 'Neutral', 'Positive','Close']]
+    
+    
+#     scaler = MinMaxScaler()
+#     scaled_df[['MA7', 'MA20', 'MA10', 'MACD', '20SD', 'upper_band', 'lower_band',
+#        'EMA', 'logmomentum','sentiment_score', 'Negative', 'Neutral', 'Positive','Close']] = scaler.fit_transform(scaled_df[['MA7', 'MA20', 'MA10', 'MACD', '20SD', 'upper_band', 'lower_band',
+#        'EMA', 'logmomentum','sentiment_score', 'Negative', 'Neutral', 'Positive','Close']])
+    
+#     features= scaled_df[['MA7', 'MA20', 'MA10', 'MACD', '20SD', 'upper_band', 'lower_band',
+#        'EMA', 'logmomentum','sentiment_score', 'Negative', 'Neutral', 'Positive']]
+#     target = scaled_df['Close'] 
+    
+#     X_train, X_test, y_train, y_test = train_test_split(features, target, test_size=0.2, random_state=42)
+
+#     features = ['MA7', 'MA20', 'MA10', 'MACD', '20SD', 'upper_band', 'lower_band',
+#        'EMA', 'logmomentum','sentiment_score', 'Negative', 'Neutral', 'Positive',]
+#     target = 'Close'
+
+#     # Feature scaler
+#     scaler_X = MinMaxScaler()
+#     X_scaled = scaler_X.fit_transform(merged_df[features])
+
+#     # Target scaler
+#     scaler_y = MinMaxScaler()
+#     y_scaled = scaler_y.fit_transform(merged_df[[target]])
+
+#     scaled_data = np.hstack((X_scaled, y_scaled)) 
+
+#     seq_length = 10  
+#     X, y = create_sequences(scaled_data, seq_length)
+
+#     split = int(0.8 * len(X))
+#     X_train, X_test = X[:split], X[split:]
+#     y_train, y_test = y[:split], y[split:]
+
+    
+#     model = Sequential([
+#         LSTM(64, return_sequences=True, input_shape=(seq_length, X.shape[2])),
+#         LayerNormalization(),  # Normalization helps stabilize training
+#         Dropout(0.1),
+
+#         LSTM(32, return_sequences=False),
+#         Dropout(0.1),
+
+#         Dense(32, activation='relu'),
+#         Dense(1)  # Predicting a single continuous value (Close price)
+#     ])
+
+#     model.compile(optimizer='adam', loss='mean_squared_error')
+#     early_stop = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+
+#     model.fit(X_train, y_train, epochs=50, batch_size=8, validation_data=(X_test, y_test),callbacks=[early_stop])
+
+#     return model, scaler_X, scaler_y

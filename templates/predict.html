@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prediction for {{ stock }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        body {
+            background-color: #f8f9fa;
+        }
+        .container {
+            margin-top: 30px;
+        }
+        .card {
+            margin-bottom: 20px;
+        }
+        #stockGraph {
+            height: 500px;
+        }
+        .sentiment-scores {
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="text-center mb-4">Prediction for {{ stock }}</h1>
+        <a href="/predict/" class="btn btn-secondary mb-4">Back to Stock Selection</a>
+
+        {% if error %}
+        <div class="alert alert-danger" role="alert">
+            {{ error }}
+        </div>
+        {% else %}
+        <!-- Predictions -->
+        <div class="card">
+            <div class="card-header">
+                <h5>Prediction Results</h5>
+            </div>
+            <div class="card-body">
+                <p><strong>Tomorrow's Predicted Price:</strong> ${{ tmrw_predicted_price }}</p>
+                <p><strong>Today's Close:</strong> ${{ actual_close }}</p>
+                <p><strong>Predicted Date:</strong> {{ predicted_date }}</p>
+                <p><strong>Processing Time:</strong> {{ processing_time_seconds }} seconds</p>
+                <h6>Technical Indicators:</h6>
+                <ul>
+                    {% for key, value in technical_indicators.items() %}
+                    <li>{{ key }}: {{ value }}</li>
+                    {% endfor %}
+                </ul>
+                <h6>Average Sentiment Score:</h6>
+                <ul class="sentiment-scores">
+                    <li>Compound: {{ sentiment_score.compound }}</li>
+                    <li>Negative: {{ sentiment_score.negative }}</li>
+                    <li>Neutral: {{ sentiment_score.neutral }}</li>
+                    <li>Positive: {{ sentiment_score.positive }}</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Graph Controls -->
+        <div class="card">
+            <div class="card-header">
+                <h5>Stock Performance Graph</h5>
+            </div>
+            <div class="card-body">
+                <form id="graphForm" class="row g-3">
+                    <div class="col-md-4">
+                        <label for="days" class="form-label">Days of History</label>
+                        <input type="number" class="form-control" id="days" name="days" value="{{ days }}" min="1" required>
+                    </div>
+                    <div class="col-md-8">
+                        <label class="form-label">Technical Indicators</label>
+                        <div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="checkbox" id="ma7" name="indicators" value="MA7">
+                                <label class="form-check-label" for="ma7">MA7</label>
+                            </div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="checkbox" id="ma10" name="indicators" value="MA10">
+                                <label class="form-check-label" for="ma10">MA10</label>
+                            </div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="checkbox" id="ma20" name="indicators" value="MA20">
+                                <label class="form-check-label" for="ma20">MA20</label>
+                            </div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="checkbox" id="macd" name="indicators" value="MACD">
+                                <label class="form-check-label" for="macd">MACD</label>
+                            </div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="checkbox" id="bollinger" name="indicators" value="Bollinger">
+                                <label class="form-check-label" for="bollinger">Bollinger Bands</label>
+                            </div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="checkbox" id="ema" name="indicators" value="EMA">
+                                <label class="form-check-label" for="ema">EMA</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-12">
+                        <button type="submit" class="btn btn-primary">Update Graph</button>
+                    </div>
+                </form>
+                <div id="stockGraph" class="mt-4"></div>
+            </div>
+        </div>
+
+        <!-- News -->
+        <div class="card">
+            <div class="card-header">
+                <h5>News for {{ stock }} (Today)</h5>
+            </div>
+            <div class="card-body">
+                {% for item in news %}
+                <div class="mb-3">
+                    <p>{{ item.text if item is mapping and item.text else 'No text available' }}</p>
+                    {% if item.link %}
+                    <a href="{{ item.link }}" target="_blank" class="btn btn-sm btn-outline-primary">Read More</a>
+                    {% endif %}
+                    <p class="sentiment-scores">
+                        Sentiment: Compound={{ item.sentiment.compound if item is mapping and item.sentiment else 0 }},
+                        Negative={{ item.sentiment.negative if item is mapping and item.sentiment else 0 }},
+                        Neutral={{ item.sentiment.neutral if item is mapping and item.sentiment else 0 }},
+                        Positive={{ item.sentiment.positive if item is mapping and item.sentiment else 0 }}
+                    </p>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Tweets -->
+        <div class="card">
+            <div class="card-header">
+                <h5>Tweets for {{ stock }} (Today)</h5>
+            </div>
+            <div class="card-body">
+                {% for tweet in tweets %}
+                <div class="mb-3">
+                    <p>{{ tweet.text }}</p>
+                    {% if tweet.link %}
+                    <a href="{{ tweet.link }}" target="_blank" class="btn btn-sm btn-outline-primary">View Tweet</a>
+                    {% endif %}
+                    <p class="sentiment-scores">
+                        Sentiment: Compound={{ tweet.sentiment.compound }},
+                        Negative={{ tweet.sentiment.negative }},
+                        Neutral={{ tweet.sentiment.neutral }},
+                        Positive={{ tweet.sentiment.positive }}
+                    </p>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <script>
+        // Pass historical data to JavaScript
+        const historicalData = {{ historical_data|tojson }};
+        const stock = "{{ stock }}";
+        const days = {{ days }};
+    
+        function updateGraph() {
+            console.log('Historical Data:', historicalData); // Debug: Log the data received
+            if (!historicalData || historicalData.length === 0) {
+                console.log('No historical data available');
+                Plotly.newPlot('stockGraph', [], {
+                    title: `${stock} Stock Performance (Past ${days} Days) - No Data`,
+                    xaxis: { title: 'Date' },
+                    yaxis: { title: 'Price (USD)' }
+                });
+                return;
+            }
+    
+            const indicators = Array.from(document.querySelectorAll('input[name="indicators"]:checked')).map(el => el.value);
+            const traces = [{
+                x: historicalData.map(d => d.Date),
+                y: historicalData.map(d => d.Close ? parseFloat(d.Close) : null).filter(y => y !== null),
+                type: 'scatter',
+                mode: 'lines',
+                name: 'Close Price',
+                line: { color: '#007bff' }
+            }];
+    
+            // Add technical indicators with null filtering
+            if (indicators.includes('MA7') && historicalData.some(d => d.MA7 !== null)) {
+                traces.push({
+                    x: historicalData.map(d => d.Date),
+                    y: historicalData.map(d => d.MA7 ? parseFloat(d.MA7) : null).filter(y => y !== null),
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: 'MA7',
+                    line: { color: '#28a745', dash: 'dash' }
+                });
+            }
+            if (indicators.includes('MA10') && historicalData.some(d => d.MA10 !== null)) {
+                traces.push({
+                    x: historicalData.map(d => d.Date),
+                    y: historicalData.map(d => d.MA10 ? parseFloat(d.MA10) : null).filter(y => y !== null),
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: 'MA10',
+                    line: { color: '#dc3545', dash: 'dash' }
+                });
+            }
+            if (indicators.includes('MA20') && historicalData.some(d => d.MA20 !== null)) {
+                traces.push({
+                    x: historicalData.map(d => d.Date),
+                    y: historicalData.map(d => d.MA20 ? parseFloat(d.MA20) : null).filter(y => y !== null),
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: 'MA20',
+                    line: { color: '#ffc107', dash: 'dash' }
+                });
+            }
+            if (indicators.includes('MACD') && historicalData.some(d => d.MACD !== null)) {
+                traces.push({
+                    x: historicalData.map(d => d.Date),
+                    y: historicalData.map(d => d.MACD ? parseFloat(d.MACD) : null).filter(y => y !== null),
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: 'MACD',
+                    line: { color: '#6f42c1' },
+                    yaxis: 'y2'
+                });
+            }
+            if (indicators.includes('Bollinger') && historicalData.some(d => d.upper_band !== null && d.lower_band !== null)) {
+                traces.push({
+                    x: historicalData.map(d => d.Date),
+                    y: historicalData.map(d => d.upper_band ? parseFloat(d.upper_band) : null).filter(y => y !== null),
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: 'Upper Bollinger',
+                    line: { color: '#17a2b8', dash: 'dot' }
+                }, {
+                    x: historicalData.map(d => d.Date),
+                    y: historicalData.map(d => d.lower_band ? parseFloat(d.lower_band) : null).filter(y => y !== null),
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: 'Lower Bollinger',
+                    line: { color: '#17a2b8', dash: 'dot' }
+                });
+            }
+            if (indicators.includes('EMA') && historicalData.some(d => d.EMA !== null)) {
+                traces.push({
+                    x: historicalData.map(d => d.Date),
+                    y: historicalData.map(d => d.EMA ? parseFloat(d.EMA) : null).filter(y => y !== null),
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: 'EMA',
+                    line: { color: '#fd7e14', dash: 'dash' }
+                });
+            }
+    
+            console.log('Traces:', traces); // Debug: Log traces before plotting
+            const layout = {
+                title: `${stock} Stock Performance (Past ${days} Days)`,
+                xaxis: { title: 'Date' },
+                yaxis: { title: 'Price (USD)' },
+                yaxis2: {
+                    title: 'MACD',
+                    overlaying: 'y',
+                    side: 'right',
+                    showgrid: false
+                },
+                margin: { t: 50 },
+                showlegend: true
+            };
+    
+            Plotly.newPlot('stockGraph', traces, layout);
+        }
+    
+        // Initial graph render
+        updateGraph();
+    
+        // Update graph on form submit
+        document.getElementById('graphForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const newDays = document.getElementById('days').value;
+            window.location.href = `/predict/${stock}?days=${newDays}`;
+        });
+    
+        // Update graph on indicator change
+        document.querySelectorAll('input[name="indicators"]').forEach(checkbox => {
+            checkbox.addEventListener('change', updateGraph);
+        });
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
