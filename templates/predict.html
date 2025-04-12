@@ -157,15 +157,15 @@
     </div>
 
     <script>
-        // Pass historical data to JavaScript
-        const historicalData = {{ historical_data|tojson }};
+        const historicalData = {{ historical_data|tojson|safe }};
+        console.log('Historical Data:', historicalData); // Debug: Log the data received
         const stock = "{{ stock }}";
         const days = {{ days }};
-    
+
         function updateGraph() {
-            console.log('Historical Data:', historicalData); // Debug: Log the data received
-            if (!historicalData || historicalData.length === 0) {
-                console.log('No historical data available');
+            console.log('Updating graph with Historical Data:', historicalData); // Debug: Log before processing
+            if (!historicalData || historicalData.length === 0 || (historicalData.length === 1 && historicalData[0].Date === 'N/A')) {
+                console.log('No valid historical data available');
                 Plotly.newPlot('stockGraph', [], {
                     title: `${stock} Stock Performance (Past ${days} Days) - No Data`,
                     xaxis: { title: 'Date' },
@@ -173,52 +173,52 @@
                 });
                 return;
             }
-    
+
             const indicators = Array.from(document.querySelectorAll('input[name="indicators"]:checked')).map(el => el.value);
             const traces = [{
                 x: historicalData.map(d => d.Date),
-                y: historicalData.map(d => d.Close ? parseFloat(d.Close) : null).filter(y => y !== null),
+                y: historicalData.map(d => d.Close ? parseFloat(d.Close) : null).filter(y => y !== null || y === 0),
                 type: 'scatter',
                 mode: 'lines',
                 name: 'Close Price',
                 line: { color: '#007bff' }
             }];
-    
-            // Add technical indicators with null filtering
-            if (indicators.includes('MA7') && historicalData.some(d => d.MA7 !== null)) {
+
+            // Add technical indicators with null/0 handling
+            if (indicators.includes('MA7') && historicalData.some(d => d.MA7 !== null && d.MA7 !== undefined)) {
                 traces.push({
                     x: historicalData.map(d => d.Date),
-                    y: historicalData.map(d => d.MA7 ? parseFloat(d.MA7) : null).filter(y => y !== null),
+                    y: historicalData.map(d => d.MA7 ? parseFloat(d.MA7) : 0).filter(y => y !== null),
                     type: 'scatter',
                     mode: 'lines',
                     name: 'MA7',
                     line: { color: '#28a745', dash: 'dash' }
                 });
             }
-            if (indicators.includes('MA10') && historicalData.some(d => d.MA10 !== null)) {
+            if (indicators.includes('MA10') && historicalData.some(d => d.MA10 !== null && d.MA10 !== undefined)) {
                 traces.push({
                     x: historicalData.map(d => d.Date),
-                    y: historicalData.map(d => d.MA10 ? parseFloat(d.MA10) : null).filter(y => y !== null),
+                    y: historicalData.map(d => d.MA10 ? parseFloat(d.MA10) : 0).filter(y => y !== null),
                     type: 'scatter',
                     mode: 'lines',
                     name: 'MA10',
                     line: { color: '#dc3545', dash: 'dash' }
                 });
             }
-            if (indicators.includes('MA20') && historicalData.some(d => d.MA20 !== null)) {
+            if (indicators.includes('MA20') && historicalData.some(d => d.MA20 !== null && d.MA20 !== undefined)) {
                 traces.push({
                     x: historicalData.map(d => d.Date),
-                    y: historicalData.map(d => d.MA20 ? parseFloat(d.MA20) : null).filter(y => y !== null),
+                    y: historicalData.map(d => d.MA20 ? parseFloat(d.MA20) : 0).filter(y => y !== null),
                     type: 'scatter',
                     mode: 'lines',
                     name: 'MA20',
                     line: { color: '#ffc107', dash: 'dash' }
                 });
             }
-            if (indicators.includes('MACD') && historicalData.some(d => d.MACD !== null)) {
+            if (indicators.includes('MACD') && historicalData.some(d => d.MACD !== null && d.MACD !== undefined)) {
                 traces.push({
                     x: historicalData.map(d => d.Date),
-                    y: historicalData.map(d => d.MACD ? parseFloat(d.MACD) : null).filter(y => y !== null),
+                    y: historicalData.map(d => d.MACD ? parseFloat(d.MACD) : 0).filter(y => y !== null),
                     type: 'scatter',
                     mode: 'lines',
                     name: 'MACD',
@@ -229,31 +229,31 @@
             if (indicators.includes('Bollinger') && historicalData.some(d => d.upper_band !== null && d.lower_band !== null)) {
                 traces.push({
                     x: historicalData.map(d => d.Date),
-                    y: historicalData.map(d => d.upper_band ? parseFloat(d.upper_band) : null).filter(y => y !== null),
+                    y: historicalData.map(d => d.upper_band ? parseFloat(d.upper_band) : 0).filter(y => y !== null),
                     type: 'scatter',
                     mode: 'lines',
                     name: 'Upper Bollinger',
                     line: { color: '#17a2b8', dash: 'dot' }
                 }, {
                     x: historicalData.map(d => d.Date),
-                    y: historicalData.map(d => d.lower_band ? parseFloat(d.lower_band) : null).filter(y => y !== null),
+                    y: historicalData.map(d => d.lower_band ? parseFloat(d.lower_band) : 0).filter(y => y !== null),
                     type: 'scatter',
                     mode: 'lines',
                     name: 'Lower Bollinger',
                     line: { color: '#17a2b8', dash: 'dot' }
                 });
             }
-            if (indicators.includes('EMA') && historicalData.some(d => d.EMA !== null)) {
+            if (indicators.includes('EMA') && historicalData.some(d => d.EMA !== null && d.EMA !== undefined)) {
                 traces.push({
                     x: historicalData.map(d => d.Date),
-                    y: historicalData.map(d => d.EMA ? parseFloat(d.EMA) : null).filter(y => y !== null),
+                    y: historicalData.map(d => d.EMA ? parseFloat(d.EMA) : 0).filter(y => y !== null),
                     type: 'scatter',
                     mode: 'lines',
                     name: 'EMA',
                     line: { color: '#fd7e14', dash: 'dash' }
                 });
             }
-    
+
             console.log('Traces:', traces); // Debug: Log traces before plotting
             const layout = {
                 title: `${stock} Stock Performance (Past ${days} Days)`,
@@ -268,20 +268,24 @@
                 margin: { t: 50 },
                 showlegend: true
             };
-    
-            Plotly.newPlot('stockGraph', traces, layout);
+
+            Plotly.newPlot('stockGraph', traces, layout).then(() => {
+                console.log('Graph plotted successfully');
+            }).catch(error => {
+                console.error('Error plotting graph:', error);
+            });
         }
-    
+
         // Initial graph render
         updateGraph();
-    
+
         // Update graph on form submit
         document.getElementById('graphForm').addEventListener('submit', function(e) {
             e.preventDefault();
             const newDays = document.getElementById('days').value;
             window.location.href = `/predict/${stock}?days=${newDays}`;
         });
-    
+
         // Update graph on indicator change
         document.querySelectorAll('input[name="indicators"]').forEach(checkbox => {
             checkbox.addEventListener('change', updateGraph);

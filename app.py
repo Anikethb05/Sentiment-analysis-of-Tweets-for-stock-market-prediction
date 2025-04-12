@@ -497,13 +497,21 @@ def fetch_tweets(stock_name):
 def get_technical_indicators(symbol):
     try:
         df = yf.download(symbol, period='60d', interval='1d')
-        
+
+        # Flatten multi-index columns if needed
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
         if len(df) < 26:
             print(f"Not enough data with 60 days, trying 90 days for {symbol}")
             df = yf.download(symbol, period='90d', interval='1d')
-            
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+
         if len(df) < 26:
             raise ValueError(f"Not enough data points for {symbol}, only got {len(df)}")
+
+        df = df.dropna(subset=['Close'])
 
         features = {}
         features['MA7'] = float(df['Close'].rolling(window=7).mean().iloc[-1])
@@ -512,15 +520,13 @@ def get_technical_indicators(symbol):
 
         exp1 = df['Close'].ewm(span=12, adjust=False).mean()
         exp2 = df['Close'].ewm(span=26, adjust=False).mean()
-        macd_line = exp1 - exp2
-        features['MACD'] = float(macd_line.iloc[-1])
+        features['MACD'] = float((exp1 - exp2).iloc[-1])
 
-        features['20SD'] = float(df['Close'].rolling(window=20).std().iloc[-1])
-
-        middle_band = df['Close'].rolling(window=20).mean()
         std_dev = df['Close'].rolling(window=20).std()
-        features['upper_band'] = float((middle_band + (std_dev * 2)).iloc[-1])
-        features['lower_band'] = float((middle_band - (std_dev * 2)).iloc[-1])
+        middle_band = df['Close'].rolling(window=20).mean()
+        features['20SD'] = float(std_dev.iloc[-1])
+        features['upper_band'] = float((middle_band + 2 * std_dev).iloc[-1])
+        features['lower_band'] = float((middle_band - 2 * std_dev).iloc[-1])
 
         features['EMA'] = float(df['Close'].ewm(span=10, adjust=False).mean().iloc[-1])
 
@@ -532,10 +538,11 @@ def get_technical_indicators(symbol):
             float(-np.log1p(abs(momentum))) if momentum < 0 else 0.0
         )
 
-        features['Close'] = float(current_close)
+        features['Close'] = current_close
 
-        if any(v is None or (isinstance(v, float) and np.isnan(v)) for v in features.values()):
-            missing = [k for k, v in features.items() if v is None or (isinstance(v, float) and np.isnan(v))]
+        # Check for missing values
+        if any(pd.isna(v) for v in features.values()):
+            missing = [k for k, v in features.items() if pd.isna(v)]
             raise ValueError(f"Missing values in indicators: {missing}")
 
         print("Technical indicators fetched successfully")
@@ -546,54 +553,56 @@ def get_technical_indicators(symbol):
 
 def get_historical_data(symbol, days):
     try:
-        period = f"{max(int(days), 30)}d"  # Ensure at least 30 days for indicators
+        period = f"{max(int(days), 30)}d"
         df = yf.download(symbol, period=period, interval='1d')
-        print(f"Raw data for {symbol}: {df.head()}")  # Debug raw data
 
-        if len(df) < 20:
-            raise ValueError(f"Not enough data for {symbol}, got {len(df)} rows, need at least 20 for indicators")
+        # Flatten multi-index columns if needed
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
 
-        # Drop rows with NaN in Close to avoid empty graphs
+        if df.empty:
+            raise ValueError(f"No data fetched for {symbol}")
+
+        if 'Close' not in df.columns:
+            raise ValueError("Missing 'Close' column in fetched data")
+
+        # Drop rows with NaN in Close and check minimum length
         df = df.dropna(subset=['Close'])
         if len(df) < 20:
-            raise ValueError(f"Insufficient valid data after dropping NaN for {symbol}")
+            raise ValueError(f"Not enough valid data for indicators: only {len(df)} valid rows")
 
-        # Calculate technical indicators
-        df['MA7'] = df['Close'].rolling(window=7).mean()
-        df['MA10'] = df['Close'].rolling(window=10).mean()
-        df['MA20'] = df['Close'].rolling(window=20).mean()
+        # Calculate technical indicators with forward fill for initial NaN
+        df['MA7'] = df['Close'].rolling(window=7, min_periods=1).mean().fillna(method='ffill').fillna(df['Close'].iloc[0])
+        df['MA10'] = df['Close'].rolling(window=10, min_periods=1).mean().fillna(method='ffill').fillna(df['Close'].iloc[0])
+        df['MA20'] = df['Close'].rolling(window=20, min_periods=1).mean().fillna(method='ffill').fillna(df['Close'].iloc[0])
 
         exp1 = df['Close'].ewm(span=12, adjust=False).mean()
         exp2 = df['Close'].ewm(span=26, adjust=False).mean()
-        df['MACD'] = exp1 - exp2
+        df['MACD'] = (exp1 - exp2).fillna(0)
 
-        df['20SD'] = df['Close'].rolling(window=20).std()
-        df['middle_band'] = df['Close'].rolling(window=20).mean() 
-        df['upper_band'] = df['middle_band'] + (df['20SD'] * 2)   
-        df['lower_band'] = df['middle_band'] - (df['20SD'] * 2)   
+        df['20SD'] = df['Close'].rolling(window=20, min_periods=1).std().fillna(0)
+        df['middle_band'] = df['Close'].rolling(window=20, min_periods=1).mean().fillna(method='ffill').fillna(df['Close'].iloc[0])
+        df['upper_band'] = df['middle_band'] + (df['20SD'] * 2)
+        df['lower_band'] = df['middle_band'] - (df['20SD'] * 2)
 
-        df['EMA'] = df['Close'].ewm(span=10, adjust=False).mean()
+        df['EMA'] = df['Close'].ewm(span=10, adjust=False).mean().fillna(method='ffill').fillna(df['Close'].iloc[0])
 
-        # Drop rows where indicators are NaN (initial periods)
-        df = df.dropna()
-        if len(df) == 0:
-            raise ValueError(f"No valid data after indicator calculation for {symbol}")
-
-        # Verify data integrity
-        required_columns = ['Close', 'MA7', 'MA10', 'MA20', 'MACD', 'upper_band', 'lower_band', 'EMA']
-        for col in required_columns:
-            if df[col].isnull().all():
-                raise ValueError(f"Column {col} contains only NaN values for {symbol}")
-
+        # Prepare data for return
         df = df.reset_index()
         df['Date'] = df['Date'].dt.strftime('%Y-%m-%d')
-        data = df[['Date', 'Close', 'MA7', 'MA10', 'MA20', 'MACD', 'upper_band', 'lower_band', 'EMA']].replace({np.nan: None}).to_dict(orient='records')
-        print(f"Processed historical data for {symbol}: {data[:5]}")  # Debug processed data
+        required_cols = ['Close', 'MA7', 'MA10', 'MA20', 'MACD', 'upper_band', 'lower_band', 'EMA']
+        data = df[['Date'] + required_cols].to_dict(orient='records')
+
+        print(f"Processed {len(data)} historical records for {symbol}")
         return data
+
     except Exception as e:
         print(f"Error fetching historical data for {symbol}: {e}")
-        return []
-
+        return [{
+            'Date': 'N/A', 'Close': 0, 'MA7': 0, 'MA10': 0, 'MA20': 0,
+            'MACD': 0, 'upper_band': 0, 'lower_band': 0, 'EMA': 0
+        }]
+    
 @app.route('/predict/')
 def index():
     return render_template('index.html', stocks=STOCKS)
@@ -654,11 +663,11 @@ def predict(stock_name):
             print(f"News sentiment - compound: {news_compound:.4f}, neg: {news_neg:.4f}, neu: {news_neu:.4f}, pos: {news_pos:.4f}")
 
     # Fallback logic: Use news sentiment if tweet sentiment is all zeros
-    final_compound = (tweet_compound + news_compound)/2
-    final_neg = (tweet_neg + news_neg)/2
-    final_neu = (tweet_neu + news_neu)/2
-    final_pos = (tweet_pos + news_pos)/2
-    final_pos = (tweet_pos + news_pos)/2
+    if tweet_compound == 0 and tweet_neg == 0 and tweet_neu == 0 and tweet_pos == 0 and (news_compound != 0 or news_neg != 0 or news_neu != 0 or news_pos != 0):
+        final_compound = news_compound
+        final_neg = news_neg
+        final_neu = news_neu
+        final_pos = news_pos
     
 
     # Fetch technical indicators
