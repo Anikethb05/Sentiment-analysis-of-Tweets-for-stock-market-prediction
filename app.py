@@ -56,27 +56,45 @@ def get_sentiment(text):
     sentiment = analyzer.polarity_scores(str(text))
     return pd.Series([sentiment['compound'], sentiment['neg'], sentiment['neu'], sentiment['pos']])
 
-def get_tech_ind(d):
-    data = d.copy()
-    data['MA7'] = data.iloc[:,4].rolling(window=7).mean()
-    data['MA20'] = data.iloc[:,4].rolling(window=20).mean() 
+
+def get_tech_ind(data):
+    data = data.copy()
+
+    # Ensure Close and Open exist
+    if 'Close' not in data.columns or 'Open' not in data.columns:
+        raise ValueError("Data must contain 'Close' and 'Open' columns")
+
+    # Simple Moving Averages
+    data['MA7'] = data['Close'].rolling(window=7).mean()
+    data['MA20'] = data['Close'].rolling(window=20).mean()
     data['MA10'] = data['Close'].rolling(window=10).mean()
 
-    data['MACD'] = data.iloc[:,4].ewm(span=26).mean() - data.iloc[:,1].ewm(span=12,adjust=False).mean()
-    #This is the difference of Closing price and Opening Price
+    # MACD
+    ema_26 = data['Close'].ewm(span=26, adjust=False).mean()
+    ema_12 = data['Open'].ewm(span=12, adjust=False).mean()
+    data['MACD'] = ema_26 - ema_12
 
-    # Create Bollinger Bands
-    data['20SD'] = data.iloc[:, 4].rolling(20).std()
-    data['upper_band'] = data['MA20'] + (data['20SD'] * 2)
-    data['lower_band'] = data['MA20'] - (data['20SD'] * 2)
+    # Standard Deviation
+    data['20SD'] = data['Close'].rolling(window=20).std()
 
-    # Create Exponential moving average
-    data['EMA'] = data.iloc[:,4].ewm(com=0.5).mean()
+    # Ensure 'MA20' and '20SD' are Series
+    ma20 = data['MA20'].astype(float)
+    sd20 = data['20SD'].astype(float)
 
-    # Create LogMomentum
-    data['logmomentum'] = np.log(data.iloc[:,4] - 1)
+    # Bollinger Bands
+    data.loc[:, 'upper_band'] = data['MA20'] + (2 * data['20SD'])
+    data.loc[:, 'lower_band'] = data['MA20'] - (2 * data['20SD'])
+
+
+    # EMA
+    data['EMA'] = data['Close'].ewm(com=0.5).mean()
+
+    # Log Momentum
+    data['logmomentum'] = np.log(data['Close'] / data['Close'].shift(1))
 
     return data
+
+
 
 def create_sequences(data, seq_length):
     X, y = [], []
@@ -164,6 +182,7 @@ def train_model(stock):
     stock_tweets_df['Date'] = stock_tweets_df['Date'].dt.date
     
     daily_sentiment = stock_tweets_df.groupby('Date').mean(numeric_only=True)
+    print(f"Sentiment data shape: {daily_sentiment.shape}")
     
     # Step 4: Load stock price data
     all_stocks = pd.read_csv('stock_yfinance_data.csv')
@@ -174,66 +193,123 @@ def train_model(stock):
     print(f"Fetching latest technical indicators for {stock_name}...")
     try:
         yf_data = yf.download(stock_name, period='90d', interval='1d')
-        
+        print(f"Downloaded stock data shape: {yf_data.shape}")
+
+        # Flatten multi-index columns if needed
+        if isinstance(yf_data.columns, pd.MultiIndex):
+            yf_data.columns = yf_data.columns.get_level_values(0)
+
+        # Moving averages
         yf_data['MA7'] = yf_data['Close'].rolling(window=7).mean()
         yf_data['MA10'] = yf_data['Close'].rolling(window=10).mean()
         yf_data['MA20'] = yf_data['Close'].rolling(window=20).mean()
-        
+
+        # MACD (Exponential Moving Average Convergence Divergence)
         exp1 = yf_data['Close'].ewm(span=12, adjust=False).mean()
         exp2 = yf_data['Close'].ewm(span=26, adjust=False).mean()
         yf_data['MACD'] = exp1 - exp2
-        
+
+        # Bollinger Bands
         yf_data['20SD'] = yf_data['Close'].rolling(window=20).std()
         middle_band = yf_data['Close'].rolling(window=20).mean()
-        yf_data['upper_band'] = middle_band + (yf_data['20SD'] * 2)
-        yf_data['lower_band'] = middle_band - (yf_data['20SD'] * 2)
         
+        # Corrected way to assign 'upper_band' and 'lower_band'
+        yf_data.loc[:, 'upper_band'] = middle_band + (2 * yf_data['20SD'])
+        yf_data.loc[:, 'lower_band'] = middle_band - (2 * yf_data['20SD'])
+
+        # Exponential Moving Average (EMA)
         yf_data['EMA'] = yf_data['Close'].ewm(span=10, adjust=False).mean()
+
+        # Calculate log momentum if it's missing
+        yf_data['logmomentum'] = np.log(yf_data['Close'] / yf_data['Close'].shift(1))
+
+        # Drop NaN values created by technical indicators
+        print(f"Stock data shape before removing NaNs: {yf_data.shape}")
+        print(f"NaN values in each column:\n{yf_data.isna().sum()}")
         
+        # Skip first 20 rows which typically have NaN values due to moving averages
+        yf_data = yf_data.iloc[20:].copy()
+        print(f"Stock data shape after skipping first 20 rows: {yf_data.shape}")
+
+        # Reset index to flatten and convert 'Date' to datetime object
         yf_data = yf_data.reset_index()
         yf_data['Date'] = pd.to_datetime(yf_data['Date']).dt.date
+
+        # Set the stock name
+        yf_data['Stock Name'] = stock_name
         
         stock_df = yf_data
-        stock_df['Stock Name'] = stock_name
-        
+
     except Exception as e:
         print(f"Error fetching fresh technical indicators: {e}")
         tech_df = get_tech_ind(stock_df)
-        stock_df = tech_df.iloc[20:,:].reset_index(drop=True)
+        stock_df = tech_df.iloc[20:, :].reset_index(drop=True)
+
+    print(f"Stock data shape: {stock_df.shape}")
     
     # Step 6: Merge stock data with sentiment data
     stock_df.set_index('Date', inplace=True)
-    merged_df = stock_df.merge(daily_sentiment, left_index=True, right_index=True, how='inner')
+    
+    # Method 1: Set default sentiment values first
+    stock_df['sentiment_score'] = 0  # Neutral by default
+    stock_df['Negative'] = 0
+    stock_df['Neutral'] = 1
+    stock_df['Positive'] = 0
+
+    # Update with actual sentiment where available
+    for date, row in daily_sentiment.iterrows():
+        if date in stock_df.index:
+            stock_df.loc[date, 'sentiment_score'] = row['sentiment_score']
+            stock_df.loc[date, 'Negative'] = row['Negative']
+            stock_df.loc[date, 'Neutral'] = row['Neutral'] 
+            stock_df.loc[date, 'Positive'] = row['Positive']
+    
+    # Alternatively, use left join (uncomment if you prefer this approach)
+    # merged_df = stock_df.merge(daily_sentiment, left_index=True, right_index=True, how='left')
+    # sentiment_cols = ['sentiment_score', 'Negative', 'Neutral', 'Positive']
+    # merged_df[sentiment_cols] = merged_df[sentiment_cols].fillna(0)
+    # stock_df = merged_df
+
+    print(f"Final data shape after adding sentiment: {stock_df.shape}")
     
     # Step 7: Prepare data for modeling
-    scaled_df = merged_df[['MA7', 'MA20', 'MA10', 'MACD', '20SD', 'upper_band', 'lower_band',
-       'EMA', 'logmomentum','sentiment_score', 'Negative', 'Neutral', 'Positive','Close']]
+    if stock_df.empty:
+        raise ValueError(f"No data available for {stock_name} after processing")
     
-    scaler = MinMaxScaler()
-    scaled_df[['MA7', 'MA20', 'MA10', 'MACD', '20SD', 'upper_band', 'lower_band',
-       'EMA', 'logmomentum','sentiment_score', 'Negative', 'Neutral', 'Positive','Close']] = scaler.fit_transform(scaled_df[['MA7', 'MA20', 'MA10', 'MACD', '20SD', 'upper_band', 'lower_band',
-       'EMA', 'logmomentum','sentiment_score', 'Negative', 'Neutral', 'Positive','Close']])
+    # Check for any remaining NaN values
+    print(f"NaN values in final dataset:\n{stock_df.isna().sum()}")
     
-    features = scaled_df[['MA7', 'MA20', 'MA10', 'MACD', '20SD', 'upper_band', 'lower_band',
-       'EMA', 'logmomentum','sentiment_score', 'Negative', 'Neutral', 'Positive']]
-    target = scaled_df['Close']
+    # Drop any remaining NaN values
+    stock_df = stock_df.dropna()
+    print(f"Shape after dropping NaN values: {stock_df.shape}")
     
-    X_train, X_test, y_train, y_test = train_test_split(features, target, test_size=0.2, random_state=42)
-
+    if stock_df.empty:
+        raise ValueError(f"No data available for {stock_name} after dropping NaN values")
+    
     features_list = ['MA7', 'MA20', 'MA10', 'MACD', '20SD', 'upper_band', 'lower_band',
        'EMA', 'logmomentum','sentiment_score', 'Negative', 'Neutral', 'Positive']
     target = 'Close'
 
+    # Make sure all required features exist
+    for feature in features_list + [target]:
+        if feature not in stock_df.columns:
+            raise ValueError(f"Required feature '{feature}' not found in dataset")
+
     scaler_X = MinMaxScaler()
-    X_scaled = scaler_X.fit_transform(merged_df[features_list])
+    X_scaled = scaler_X.fit_transform(stock_df[features_list])
 
     scaler_y = MinMaxScaler()
-    y_scaled = scaler_y.fit_transform(merged_df[[target]])
+    y_scaled = scaler_y.fit_transform(stock_df[[target]])
 
     scaled_data = np.hstack((X_scaled, y_scaled))
 
     seq_length = 10
     X, y = create_sequences(scaled_data, seq_length)
+    
+    if len(X) == 0:
+        raise ValueError(f"No sequences could be created for {stock_name}. Not enough data points after preprocessing.")
+    
+    print(f"Created {len(X)} sequences for training")
 
     split = int(0.8 * len(X))
     X_train, X_test = X[:split], X[split:]
@@ -255,8 +331,6 @@ def train_model(stock):
         Dense(8),
         Dense(units=output_dim)
     ])
-
-    
 
     model.compile(optimizer='adam', loss='mean_squared_error')
     early_stop = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
