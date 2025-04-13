@@ -48,9 +48,110 @@ FEATURE_TEMPLATE = ['MA7', 'MA20', 'MA10', 'MACD', '20SD', 'upper_band', 'lower_
                     'EMA', 'logmomentum', 'sentiment_score', 'Negative', 'Neutral', 'Positive']
 
 MODEL_DIR = 'models'
+DATA_FILE = 'stock_yfinance_data.csv'
+DATA_TIMESTAMP_FILE = 'data_timestamp.pkl'
 
 # Ensure model directory exists
 os.makedirs(MODEL_DIR, exist_ok=True)
+
+# Check and update stock data at the beginning of the year
+def update_stock_data_if_needed():
+    current_date = datetime.now()
+    if os.path.exists(DATA_FILE):
+        try:
+            # Read existing CSV to check dates
+            df = pd.read_csv(DATA_FILE)
+            if 'Date' not in df.columns:
+                raise ValueError("Date column not found in CSV")
+            
+            df['Date'] = pd.to_datetime(df['Date'])
+            max_date = df['Date'].max()
+            min_date = df['Date'].min()
+            current_year = current_date.year
+            max_year = max_date.year
+            min_year = min_date.year
+
+            # Check if the data is older than 1 year from the current year
+            if max_year < (current_year - 1) or min_year < (current_year - 1):
+                print(f"Dataset is older than 1 year (max year: {max_year}, min year: {min_year}, current year: {current_year}), downloading new data for {current_year - 1}...")
+                download_fresh_data(current_year - 1)
+            else:
+                print(f"Dataset is recent (max year: {max_year}, min year: {min_year}), reading from existing CSV...")
+        except Exception as e:
+            print(f"Error reading CSV or dates: {e}, downloading new data...")
+            download_fresh_data(current_year - 1)
+    else:
+        print("No existing data, downloading new data...")
+        download_fresh_data(current_year - 1)
+
+
+def download_fresh_data(target_year):
+    tickers = ['TSLA', 'MSFT', 'PG', 'META', 'AMZN', 'GOOG', 'AMD', 'AAPL',
+               'NFLX', 'TSM', 'KO', 'F', 'COST', 'DIS', 'VZ', 'CRM', 'INTC', 'BA',
+               'BX', 'NOC', 'PYPL', 'ENPH', 'NIO', 'ZS', 'XPEV']
+    
+    start_date = f'{target_year}-01-01'
+    end_date = f'{target_year}-12-31'
+    all_data = pd.DataFrame()
+
+    for ticker in tickers:
+        print(f"Downloading data for {ticker}...")
+        try:
+            stock_data = yf.download(ticker, start=start_date, end=end_date, progress=False)
+            # Flatten multi-index columns if present
+            if isinstance(stock_data.columns, pd.MultiIndex):
+                stock_data.columns = ['_'.join(col).strip() if isinstance(col, tuple) else col for col in stock_data.columns]
+            
+            # Reset index to make Date a column
+            stock_data = stock_data.reset_index()
+            
+            # Melt the DataFrame to long format
+            stock_data_melted = pd.melt(stock_data, 
+                                       id_vars=['Date'], 
+                                       value_vars=[col for col in stock_data.columns if col != 'Date'],
+                                       var_name='Metric',
+                                       value_name='Value')
+            
+            # Split Metric into Metric and Ticker (if needed), but we’ll handle Ticker separately
+            stock_data_melted['Metric'] = stock_data_melted['Metric'].str.replace(f'_{ticker}', '', regex=True)
+            stock_data_melted['Stock Name'] = ticker
+            
+            # Pivot back to wide format
+            stock_data_pivoted = stock_data_melted.pivot_table(index=['Date', 'Stock Name'], 
+                                                            columns='Metric', 
+                                                            values='Value').reset_index()
+            
+            all_data = pd.concat([all_data, stock_data_pivoted], axis=0, ignore_index=True)
+        except Exception as e:
+            print(f"Error downloading {ticker}: {e}")
+
+    # Ensure all expected columns are present, fill with NaN if missing
+    expected_columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume', 'Stock Name']
+    for col in expected_columns:
+        if col not in all_data.columns:
+            all_data[col] = np.nan
+
+    # Reorder columns exactly as specified
+    all_data = all_data[expected_columns]
+
+    # Drop rows with all NaN values (if any)
+    all_data = all_data.dropna(how='all')
+
+    # Convert Date to string format matching your image (YYYY-MM-DD)
+    all_data['Date'] = pd.to_datetime(all_data['Date']).dt.strftime('%Y-%m-%d')
+
+    # Ensure numerical columns are floats with consistent decimal precision (optional adjustment)
+    numerical_cols = ['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']
+    for col in numerical_cols:
+        all_data[col] = pd.to_numeric(all_data[col], errors='coerce')
+
+    all_data.to_csv(DATA_FILE, index=False, float_format='%.6f')
+    with open(DATA_TIMESTAMP_FILE, 'wb') as f:
+        pickle.dump(datetime.now(), f)
+    print(f"Data for {target_year} saved to {DATA_FILE} and timestamp updated")
+
+# Call the update function at startup
+update_stock_data_if_needed()
 
 def get_sentiment(text):
     sentiment = analyzer.polarity_scores(str(text))
@@ -738,13 +839,25 @@ def predict(stock_name):
             news_pos = np.mean(news_poss)
             print(f"News sentiment - compound: {news_compound:.4f}, neg: {news_neg:.4f}, neu: {news_neu:.4f}, pos: {news_pos:.4f}")
 
-    # Fallback logic: Use news sentiment if tweet sentiment is all zeros
-    if tweet_compound == 0 and tweet_neg == 0 and tweet_neu == 0 and tweet_pos == 0 and (news_compound != 0 or news_neg != 0 or news_neu != 0 or news_pos != 0):
+    # Initialize final sentiment variables with default values
+    final_compound = tweet_compound  # Default to tweet sentiment
+    final_neg = tweet_neg
+    final_neu = tweet_neu
+    final_pos = tweet_pos
+
+    # Fallback logic: Use news sentiment if tweet sentiment is all zeros and news has data
+    if (tweet_compound == 0 and tweet_neg == 0 and tweet_neu == 0 and tweet_pos == 0) and \
+       (news_compound != 0 or news_neg != 0 or news_neu != 0 or news_pos != 0):
         final_compound = news_compound
         final_neg = news_neg
         final_neu = news_neu
         final_pos = news_pos
-    
+    # Final fallback: Use sentiment from fetch_sentiment_data if available
+    elif sentiment_score != 0 or neg != 0 or neu != 0 or pos != 0:
+        final_compound = sentiment_score
+        final_neg = neg
+        final_neu = neu
+        final_pos = pos
 
     # Fetch technical indicators
     print(f"Fetching technical indicators for {stock_name}...")
