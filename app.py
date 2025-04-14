@@ -336,7 +336,7 @@ def train_model(stock):
 
     model.fit(
         X_train, y_train,
-        epochs=100,
+        epochs=50,
         batch_size=8,
         validation_data=(X_test, y_test),
         callbacks=[early_stop]
