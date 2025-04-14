@@ -1,0 +1,12 @@
+ #Step 8: Build and train model
+    # model = tf.keras.Sequential([
+    #     LSTM(units=1024, return_sequences=True, input_shape=(input_dim, feature_size), recurrent_dropout=0.3),
+    #     LSTM(units=512, return_sequences=True, recurrent_dropout=0.3),
+    #     LSTM(units=256, return_sequences=True, recurrent_dropout=0.3),
+    #     LSTM(units=128, return_sequences=True, recurrent_dropout=0.3),
+    #     LSTM(units=32, recurrent_dropout=0.3),
+    #     Dense(32),
+    #     Dense(16),
+    #     Dense(8),
+    #     Dense(units=output_dim)
+    # ])

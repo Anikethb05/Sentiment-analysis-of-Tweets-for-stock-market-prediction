@@ -16,6 +16,8 @@ import os
 import requests
 from bs4 import BeautifulSoup
 import random
+import asyncio
+from twscrape import API, gather
 
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
@@ -48,115 +50,13 @@ FEATURE_TEMPLATE = ['MA7', 'MA20', 'MA10', 'MACD', '20SD', 'upper_band', 'lower_
                     'EMA', 'logmomentum', 'sentiment_score', 'Negative', 'Neutral', 'Positive']
 
 MODEL_DIR = 'models'
-DATA_FILE = 'stock_yfinance_data.csv'
-DATA_TIMESTAMP_FILE = 'data_timestamp.pkl'
 
 # Ensure model directory exists
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-# Check and update stock data at the beginning of the year
-def update_stock_data_if_needed():
-    current_date = datetime.now()
-    if os.path.exists(DATA_FILE):
-        try:
-            # Read existing CSV to check dates
-            df = pd.read_csv(DATA_FILE)
-            if 'Date' not in df.columns:
-                raise ValueError("Date column not found in CSV")
-            
-            df['Date'] = pd.to_datetime(df['Date'])
-            max_date = df['Date'].max()
-            min_date = df['Date'].min()
-            current_year = current_date.year
-            max_year = max_date.year
-            min_year = min_date.year
-
-            # Check if the data is older than 1 year from the current year
-            if max_year < (current_year - 1) or min_year < (current_year - 1):
-                print(f"Dataset is older than 1 year (max year: {max_year}, min year: {min_year}, current year: {current_year}), downloading new data for {current_year - 1}...")
-                download_fresh_data(current_year - 1)
-            else:
-                print(f"Dataset is recent (max year: {max_year}, min year: {min_year}), reading from existing CSV...")
-        except Exception as e:
-            print(f"Error reading CSV or dates: {e}, downloading new data...")
-            download_fresh_data(current_year - 1)
-    else:
-        print("No existing data, downloading new data...")
-        download_fresh_data(current_year - 1)
-
-
-def download_fresh_data(target_year):
-    tickers = ['TSLA', 'MSFT', 'PG', 'META', 'AMZN', 'GOOG', 'AMD', 'AAPL',
-               'NFLX', 'TSM', 'KO', 'F', 'COST', 'DIS', 'VZ', 'CRM', 'INTC', 'BA',
-               'BX', 'NOC', 'PYPL', 'ENPH', 'NIO', 'ZS', 'XPEV']
-    
-    start_date = f'{target_year}-01-01'
-    end_date = f'{target_year}-12-31'
-    all_data = pd.DataFrame()
-
-    for ticker in tickers:
-        print(f"Downloading data for {ticker}...")
-        try:
-            stock_data = yf.download(ticker, start=start_date, end=end_date, progress=False)
-            # Flatten multi-index columns if present
-            if isinstance(stock_data.columns, pd.MultiIndex):
-                stock_data.columns = ['_'.join(col).strip() if isinstance(col, tuple) else col for col in stock_data.columns]
-            
-            # Reset index to make Date a column
-            stock_data = stock_data.reset_index()
-            
-            # Melt the DataFrame to long format
-            stock_data_melted = pd.melt(stock_data, 
-                                       id_vars=['Date'], 
-                                       value_vars=[col for col in stock_data.columns if col != 'Date'],
-                                       var_name='Metric',
-                                       value_name='Value')
-            
-            # Split Metric into Metric and Ticker (if needed), but we’ll handle Ticker separately
-            stock_data_melted['Metric'] = stock_data_melted['Metric'].str.replace(f'_{ticker}', '', regex=True)
-            stock_data_melted['Stock Name'] = ticker
-            
-            # Pivot back to wide format
-            stock_data_pivoted = stock_data_melted.pivot_table(index=['Date', 'Stock Name'], 
-                                                            columns='Metric', 
-                                                            values='Value').reset_index()
-            
-            all_data = pd.concat([all_data, stock_data_pivoted], axis=0, ignore_index=True)
-        except Exception as e:
-            print(f"Error downloading {ticker}: {e}")
-
-    # Ensure all expected columns are present, fill with NaN if missing
-    expected_columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume', 'Stock Name']
-    for col in expected_columns:
-        if col not in all_data.columns:
-            all_data[col] = np.nan
-
-    # Reorder columns exactly as specified
-    all_data = all_data[expected_columns]
-
-    # Drop rows with all NaN values (if any)
-    all_data = all_data.dropna(how='all')
-
-    # Convert Date to string format matching your image (YYYY-MM-DD)
-    all_data['Date'] = pd.to_datetime(all_data['Date']).dt.strftime('%Y-%m-%d')
-
-    # Ensure numerical columns are floats with consistent decimal precision (optional adjustment)
-    numerical_cols = ['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']
-    for col in numerical_cols:
-        all_data[col] = pd.to_numeric(all_data[col], errors='coerce')
-
-    all_data.to_csv(DATA_FILE, index=False, float_format='%.6f')
-    with open(DATA_TIMESTAMP_FILE, 'wb') as f:
-        pickle.dump(datetime.now(), f)
-    print(f"Data for {target_year} saved to {DATA_FILE} and timestamp updated")
-
-# Call the update function at startup
-update_stock_data_if_needed()
-
 def get_sentiment(text):
     sentiment = analyzer.polarity_scores(str(text))
     return pd.Series([sentiment['compound'], sentiment['neg'], sentiment['neu'], sentiment['pos']])
-
 
 def get_tech_ind(data):
     data = data.copy()
@@ -186,7 +86,6 @@ def get_tech_ind(data):
     data.loc[:, 'upper_band'] = data['MA20'] + (2 * data['20SD'])
     data.loc[:, 'lower_band'] = data['MA20'] - (2 * data['20SD'])
 
-
     # EMA
     data['EMA'] = data['Close'].ewm(com=0.5).mean()
 
@@ -194,8 +93,6 @@ def get_tech_ind(data):
     data['logmomentum'] = np.log(data['Close'] / data['Close'].shift(1))
 
     return data
-
-
 
 def create_sequences(data, seq_length):
     X, y = [], []
@@ -238,160 +135,159 @@ def train_model(stock):
             print(f"Error loading model for {stock_name}: {e}")
             retrain = True
 
-    # Step 1: Load existing data
-    df = pd.read_csv('stock_tweets.csv')
-    df[['sentiment_score', 'Negative', 'Neutral', 'Positive']] = df['Tweet'].apply(get_sentiment)
-    
-    # Step 2: Fetch additional tweets using snscrape
-    print(f"Fetching additional tweets for {stock_name} using snscrape...")
+    # Step 1: Fetch stock data for the past year from Yahoo Finance
+    print(f"Fetching stock data for {stock_name} from Yahoo Finance...")
+    try:
+        end_date = datetime.now()
+       # start_date = end_date - timedelta(days=365) start=start_date, end=end_date
+        stock_df = yf.download(stock_name, period='180d' , progress=False)
+        
+        if stock_df.empty:
+            raise ValueError(f"No data fetched for {stock_name}")
+
+        # Flatten multi-index columns if present
+        if isinstance(stock_df.columns, pd.MultiIndex):
+            stock_df.columns = stock_df.columns.get_level_values(0)
+
+        # Reset index to make Date a column
+        stock_df = stock_df.reset_index()
+        stock_df['Date'] = pd.to_datetime(stock_df['Date'])
+        stock_df['Stock Name'] = stock_name
+        
+        # Ensure required columns
+        required_cols = ['Date', 'Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume', 'Stock Name']
+        for col in required_cols:
+            if col not in stock_df.columns:
+                stock_df[col] = np.nan
+
+        stock_df = stock_df[required_cols]
+        print(f"Fetched stock data shape: {stock_df.shape}")
+
+    except Exception as e:
+        print(f"Error fetching stock data: {e}")
+        raise ValueError(f"Failed to fetch stock data for {stock_name}")
+
+    # Step 2: Compute technical indicators
+    try:
+        stock_df['MA7'] = stock_df['Close'].rolling(window=7).mean()
+        stock_df['MA10'] = stock_df['Close'].rolling(window=10).mean()
+        stock_df['MA20'] = stock_df['Close'].rolling(window=20).mean()
+
+        exp1 = stock_df['Close'].ewm(span=12, adjust=False).mean()
+        exp2 = stock_df['Close'].ewm(span=26, adjust=False).mean()
+        stock_df['MACD'] = exp1 - exp2
+
+        stock_df['20SD'] = stock_df['Close'].rolling(window=20).std()
+        middle_band = stock_df['Close'].rolling(window=20).mean()
+        stock_df['upper_band'] = middle_band + (2 * stock_df['20SD'])
+        stock_df['lower_band'] = middle_band - (2 * stock_df['20SD'])
+
+        stock_df['EMA'] = stock_df['Close'].ewm(span=10, adjust=False).mean()
+        stock_df['logmomentum'] = np.log(stock_df['Close'] / stock_df['Close'].shift(1))
+
+        # Drop initial rows with NaNs from indicators
+        stock_df = stock_df.iloc[20:].copy()
+        print(f"Stock data shape after indicators: {stock_df.shape}")
+
+    except Exception as e:
+        print(f"Error computing technical indicators: {e}")
+        raise ValueError(f"Failed to compute technical indicators for {stock_name}")
+
+    # Step 3: Fetch sentiment data (tweets and news)
+    print(f"Fetching tweets for {stock_name}...")
     try:
         end_date = datetime.now()
         start_date = end_date - timedelta(days=30)
         start_str = start_date.strftime('%Y-%m-%d')
         end_str = end_date.strftime('%Y-%m-%d')
         
-        query = f"${stock_name} OR #{stock_name} OR {stock_name} stock lang:en since:{start_str} until:{end_str}"
-        command = ["snscrape", "--jsonl", "--max-results", "100", "twitter-search", query]
+        tweets = fetch_tweets(stock_name)
         
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        output, error = process.communicate()
+        tweet_df = pd.DataFrame([{
+            'Date': t['date'],
+            'Tweet': t['text'],
+            'Stock Name': stock_name,
+            'sentiment_score': t['sentiment']['compound'],
+            'Negative': t['sentiment']['negative'],
+            'Neutral': t['sentiment']['neutral'],
+            'Positive': t['sentiment']['positive']
+        } for t in tweets if t['text'] != 'No tweets found for today' and t['text'] != 'Error fetching tweets'])
         
-        new_tweets = []
-        for line in output.strip().split('\n'):
-            if line:
-                tweet_data = json.loads(line)
-                new_tweets.append({
-                    'Date': tweet_data['date'].split('T')[0],
-                    'Tweet': tweet_data['content'],
-                    'Stock Name': stock_name
-                })
-        
-        if new_tweets:
-            new_df = pd.DataFrame(new_tweets)
-            new_df[['sentiment_score', 'Negative', 'Neutral', 'Positive']] = new_df['Tweet'].apply(get_sentiment)
-            df = pd.concat([df, new_df], ignore_index=True)
-            print(f"Added {len(new_tweets)} new tweets from snscrape")
+        if not tweet_df.empty:
+            tweet_df['Date'] = pd.to_datetime(tweet_df['Date'])
+            print(f"Fetched {len(tweet_df)} tweets")
         else:
-            print("No new tweets found from snscrape")
-            
+            print("No tweets fetched")
+            tweet_df = pd.DataFrame(columns=['Date', 'sentiment_score', 'Negative', 'Neutral', 'Positive'])
+
     except Exception as e:
-        print(f"Error fetching tweets from snscrape: {e}")
-    
-    # Step 3: Filter data for the specific stock
-    stock_tweets_df = df[df['Stock Name'] == stock_name].copy()
-    stock_tweets_df['Date'] = pd.to_datetime(stock_tweets_df['Date'])
-    stock_tweets_df['Date'] = stock_tweets_df['Date'].dt.date
-    
-    daily_sentiment = stock_tweets_df.groupby('Date').mean(numeric_only=True)
-    print(f"Sentiment data shape: {daily_sentiment.shape}")
-    
-    # Step 4: Load stock price data
-    all_stocks = pd.read_csv('stock_yfinance_data.csv')
-    stock_df = all_stocks[all_stocks['Stock Name'] == stock_name]
-    stock_df['Date'] = pd.to_datetime(stock_df['Date'])
-    
-    # Step 5: Get fresh technical indicators from Yahoo Finance
-    print(f"Fetching latest technical indicators for {stock_name}...")
+        print(f"Error fetching tweets: {e}")
+        tweet_df = pd.DataFrame(columns=['Date', 'sentiment_score', 'Negative', 'Neutral', 'Positive'])
+
+    print(f"Fetching news for {stock_name}...")
     try:
-        yf_data = yf.download(stock_name, period='90d', interval='1d')
-        print(f"Downloaded stock data shape: {yf_data.shape}")
-
-        # Flatten multi-index columns if needed
-        if isinstance(yf_data.columns, pd.MultiIndex):
-            yf_data.columns = yf_data.columns.get_level_values(0)
-
-        # Moving averages
-        yf_data['MA7'] = yf_data['Close'].rolling(window=7).mean()
-        yf_data['MA10'] = yf_data['Close'].rolling(window=10).mean()
-        yf_data['MA20'] = yf_data['Close'].rolling(window=20).mean()
-
-        # MACD (Exponential Moving Average Convergence Divergence)
-        exp1 = yf_data['Close'].ewm(span=12, adjust=False).mean()
-        exp2 = yf_data['Close'].ewm(span=26, adjust=False).mean()
-        yf_data['MACD'] = exp1 - exp2
-
-        # Bollinger Bands
-        yf_data['20SD'] = yf_data['Close'].rolling(window=20).std()
-        middle_band = yf_data['Close'].rolling(window=20).mean()
+        news = fetch_news_data(stock_name)
         
-        # Corrected way to assign 'upper_band' and 'lower_band'
-        yf_data.loc[:, 'upper_band'] = middle_band + (2 * yf_data['20SD'])
-        yf_data.loc[:, 'lower_band'] = middle_band - (2 * yf_data['20SD'])
-
-        # Exponential Moving Average (EMA)
-        yf_data['EMA'] = yf_data['Close'].ewm(span=10, adjust=False).mean()
-
-        # Calculate log momentum if it's missing
-        yf_data['logmomentum'] = np.log(yf_data['Close'] / yf_data['Close'].shift(1))
-
-        # Drop NaN values created by technical indicators
-        print(f"Stock data shape before removing NaNs: {yf_data.shape}")
-        print(f"NaN values in each column:\n{yf_data.isna().sum()}")
+        news_df = pd.DataFrame([{
+            'Date': datetime.now().strftime('%Y-%m-%d'),
+            'Text': n['text'],
+            'sentiment_score': n['sentiment']['compound'],
+            'Negative': n['sentiment']['negative'],
+            'Neutral': n['sentiment']['neutral'],
+            'Positive': n['sentiment']['positive']
+        } for n in news if n['text']])
         
-        # Skip first 20 rows which typically have NaN values due to moving averages
-        yf_data = yf_data.iloc[20:].copy()
-        print(f"Stock data shape after skipping first 20 rows: {yf_data.shape}")
-
-        # Reset index to flatten and convert 'Date' to datetime object
-        yf_data = yf_data.reset_index()
-        yf_data['Date'] = pd.to_datetime(yf_data['Date']).dt.date
-
-        # Set the stock name
-        yf_data['Stock Name'] = stock_name
-        
-        stock_df = yf_data
+        if not news_df.empty:
+            news_df['Date'] = pd.to_datetime(news_df['Date'])
+            print(f"Fetched {len(news_df)} news items")
+        else:
+            print("No news fetched")
+            news_df = pd.DataFrame(columns=['Date', 'sentiment_score', 'Negative', 'Neutral', 'Positive'])
 
     except Exception as e:
-        print(f"Error fetching fresh technical indicators: {e}")
-        tech_df = get_tech_ind(stock_df)
-        stock_df = tech_df.iloc[20:, :].reset_index(drop=True)
+        print(f"Error fetching news: {e}")
+        news_df = pd.DataFrame(columns=['Date', 'sentiment_score', 'Negative', 'Neutral', 'Positive'])
 
-    print(f"Stock data shape: {stock_df.shape}")
-    
-    # Step 6: Merge stock data with sentiment data
-    stock_df.set_index('Date', inplace=True)
-    
-    # Method 1: Set default sentiment values first
-    stock_df['sentiment_score'] = 0  # Neutral by default
-    stock_df['Negative'] = 0
-    stock_df['Neutral'] = 1
-    stock_df['Positive'] = 0
+    # Step 4: Combine sentiment data
+    sentiment_df = pd.concat([tweet_df, news_df], ignore_index=True)
+    if not sentiment_df.empty:
+        sentiment_df['Date'] = pd.to_datetime(sentiment_df['Date']).dt.date
+        daily_sentiment = sentiment_df.groupby('Date').mean(numeric_only=True).reset_index()
+        daily_sentiment['Date'] = pd.to_datetime(daily_sentiment['Date'])
+        print(f"Combined sentiment data shape: {daily_sentiment.shape}")
+    else:
+        print("No sentiment data available")
+        daily_sentiment = pd.DataFrame(columns=['Date', 'sentiment_score', 'Negative', 'Neutral', 'Positive'])
 
-    # Update with actual sentiment where available
-    for date, row in daily_sentiment.iterrows():
-        if date in stock_df.index:
-            stock_df.loc[date, 'sentiment_score'] = row['sentiment_score']
-            stock_df.loc[date, 'Negative'] = row['Negative']
-            stock_df.loc[date, 'Neutral'] = row['Neutral'] 
-            stock_df.loc[date, 'Positive'] = row['Positive']
-    
-    # Alternatively, use left join (uncomment if you prefer this approach)
-    # merged_df = stock_df.merge(daily_sentiment, left_index=True, right_index=True, how='left')
-    # sentiment_cols = ['sentiment_score', 'Negative', 'Neutral', 'Positive']
-    # merged_df[sentiment_cols] = merged_df[sentiment_cols].fillna(0)
-    # stock_df = merged_df
+    # Step 5: Merge stock data with sentiment data
+    stock_df['Date'] = pd.to_datetime(stock_df['Date']).dt.date
+    daily_sentiment['Date'] = pd.to_datetime(daily_sentiment['Date']).dt.date
+    stock_df = stock_df.merge(daily_sentiment, on='Date', how='left')
 
-    print(f"Final data shape after adding sentiment: {stock_df.shape}")
-    
-    # Step 7: Prepare data for modeling
-    if stock_df.empty:
-        raise ValueError(f"No data available for {stock_name} after processing")
-    
-    # Check for any remaining NaN values
-    print(f"NaN values in final dataset:\n{stock_df.isna().sum()}")
-    
+    # Fill missing sentiment values with neutral defaults
+    stock_df[['sentiment_score', 'Negative', 'Neutral', 'Positive']] = stock_df[['sentiment_score', 'Negative', 'Neutral', 'Positive']].fillna({
+        'sentiment_score': 0,
+        'Negative': 0,
+        'Neutral': 1,
+        'Positive': 0
+    })
+
+    # Drop unnecessary columns
+    if 'Adj Close' in stock_df.columns:
+        stock_df = stock_df.drop(columns=['Adj Close'])
+
     # Drop any remaining NaN values
     stock_df = stock_df.dropna()
-    print(f"Shape after dropping NaN values: {stock_df.shape}")
-    
+    print(f"Final data shape after merging: {stock_df.shape}")
+
     if stock_df.empty:
-        raise ValueError(f"No data available for {stock_name} after dropping NaN values")
-    
+        raise ValueError(f"No valid data for {stock_name} after preprocessing")
+
+    # Step 6: Prepare features and target
     features_list = ['MA7', 'MA20', 'MA10', 'MACD', '20SD', 'upper_band', 'lower_band',
-       'EMA', 'logmomentum','sentiment_score', 'Negative', 'Neutral', 'Positive']
+                     'EMA', 'logmomentum', 'sentiment_score', 'Negative', 'Neutral', 'Positive']
     target = 'Close'
 
-    # Make sure all required features exist
     for feature in features_list + [target]:
         if feature not in stock_df.columns:
             raise ValueError(f"Required feature '{feature}' not found in dataset")
@@ -412,7 +308,7 @@ def train_model(stock):
     
     print(f"Created {len(X)} sequences for training")
 
-    split = int(0.8 * len(X))
+    split = int(0.85 * len(X))
     X_train, X_test = X[:split], X[split:]
     y_train, y_test = y[:split], y[split:]
 
@@ -420,16 +316,18 @@ def train_model(stock):
     feature_size = X_train.shape[2]
     output_dim = 1
 
-    #Step 8: Build and train model
+    # Step 7: Build and train model
     model = tf.keras.Sequential([
-        LSTM(units=1024, return_sequences=True, input_shape=(input_dim, feature_size), recurrent_dropout=0.3),
-        LSTM(units=512, return_sequences=True, recurrent_dropout=0.3),
-        LSTM(units=256, return_sequences=True, recurrent_dropout=0.3),
-        LSTM(units=128, return_sequences=True, recurrent_dropout=0.3),
-        LSTM(units=64, recurrent_dropout=0.3),
-        Dense(32),
-        Dense(16),
-        Dense(8),
+        tf.keras.layers.BatchNormalization(input_shape=(input_dim, feature_size)),
+        LSTM(units=128, return_sequences=True, recurrent_dropout=0.2, 
+             kernel_regularizer=tf.keras.regularizers.l2(0.01)),
+        LSTM(units=64, recurrent_dropout=0.2, 
+             kernel_regularizer=tf.keras.regularizers.l2(0.01)),
+        tf.keras.layers.BatchNormalization(),
+        Dense(32, activation='gelu', kernel_regularizer=tf.keras.regularizers.l2(0.01)),
+        Dropout(0.3),
+        Dense(16, activation='gelu', kernel_regularizer=tf.keras.regularizers.l2(0.01)),
+        Dropout(0.3),
         Dense(units=output_dim)
     ])
 
@@ -438,7 +336,7 @@ def train_model(stock):
 
     model.fit(
         X_train, y_train,
-        epochs=50,
+        epochs=100,
         batch_size=8,
         validation_data=(X_test, y_test),
         callbacks=[early_stop]
@@ -475,17 +373,16 @@ def fetch_news_data(ticker):
         soup = BeautifulSoup(response.text, 'html.parser')
         news_items = []
         
-        articles = soup.find_all("div", {"class": "Ov(h) Pend(44px) Pstart(25px)"})
-        if not articles:
-            articles = soup.find_all("h3", {"class": "Mb(5px)"})
-        
+        articles = soup.select('li.js-stream-content')
         for article in articles[:15]:
-            if hasattr(article, 'text') and article.text:
-                text = article.text.strip()
+            headline = article.find('h3') or article.find('a')
+            if headline and headline.text.strip():
+                text = headline.text.strip()
+                link = headline.get('href', '') if headline.name == 'a' else ''
                 sentiment = analyzer.polarity_scores(text)
                 news_items.append({
                     'text': text,
-                    'link': '',
+                    'link': link,
                     'sentiment': {
                         'compound': round(sentiment['compound'], 4),
                         'negative': round(sentiment['neg'], 4),
@@ -495,8 +392,25 @@ def fetch_news_data(ticker):
                 })
         
         if not news_items:
+            articles = soup.select('h3')
+            for article in articles[:15]:
+                text = article.text.strip()
+                if text:
+                    sentiment = analyzer.polarity_scores(text)
+                    news_items.append({
+                        'text': text,
+                        'link': '',
+                        'sentiment': {
+                            'compound': round(sentiment['compound'], 4),
+                            'negative': round(sentiment['neg'], 4),
+                            'neutral': round(sentiment['neu'], 4),
+                            'positive': round(sentiment['pos'], 4)
+                        }
+                    })
+        
+        if not news_items:
             all_text = soup.get_text()
-            relevant_sentences = [s.strip() for s in all_text.split('.') if ticker in s and len(s) > 30]
+            relevant_sentences = [s.strip() for s in all_text.split('.') if ticker in s and len(s.strip()) > 30]
             for text in relevant_sentences[:15]:
                 sentiment = analyzer.polarity_scores(text)
                 news_items.append({
@@ -511,10 +425,6 @@ def fetch_news_data(ticker):
                 })
         
         print(f"Found {len(news_items)} news items for {ticker}")
-        if news_items:
-            for i, item in enumerate(news_items[:3]):
-                print(f"- News {i+1}: {item['text'][:100]}...")
-                
         return news_items if news_items else []
     except Exception as e:
         print(f"Error fetching Yahoo Finance news: {e}")
@@ -571,32 +481,28 @@ def fetch_alternative_sentiment(ticker):
 
 @lru_cache(maxsize=32)
 def fetch_sentiment_data(stock_name):
-    """Fetch sentiment data using multiple methods."""
-    # First try news data
-    news_items = fetch_news_data(stock_name)
+    """Fetch sentiment data using both tweets and news."""
+    tweets = fetch_tweets(stock_name)
+    news = fetch_news_data(stock_name)
     
-    # If we got some news, use that
-    if len(news_items) >= 5:
-        return news_items
+    # Combine tweet texts and news texts
+    tweet_texts = [t['text'] for t in tweets if 'text' in t]
+    news_texts = [n['text'] for n in news if 'text' in n]
     
-    # Otherwise try alternative sources
-    alternative_data = fetch_alternative_sentiment(stock_name)
+    combined_texts = tweet_texts + news_texts
+    print(f"Combined {len(tweet_texts)} tweets and {len(news_texts)} news items for sentiment analysis")
     
-    # Combine whatever we got
-    combined_data = news_items + alternative_data
-    
-    # If we still don't have enough data
-    if len(combined_data) < 5:
-        print(f"Warning: Limited sentiment data for {stock_name} ({len(combined_data)} items)")
+    if not combined_texts:
+        print(f"Warning: No sentiment data for {stock_name}")
+        return []
         
-    return combined_data
+    return combined_texts
 
 def get_sentiment_scores(texts):
     """Calculate sentiment scores with improved error handling."""
     if not texts:
         print("Warning: No texts available for sentiment analysis")
-        # Return neutral sentiment with slight negative bias
-        return 0,0,0,0
+        return 0,0,1,0
     
     try:
         compound_scores = []
@@ -617,7 +523,7 @@ def get_sentiment_scores(texts):
         # Calculate averages, handling empty lists
         if not compound_scores:
             print("Warning: No valid sentiment scores calculated")
-            return 0,0,0,0
+            return 0,0,1,0
             
         sentiment_score = np.mean(compound_scores)
         positive = np.mean(positives)
@@ -629,8 +535,7 @@ def get_sentiment_scores(texts):
 
     except Exception as e:
         print(f"Error in sentiment analysis: {e}")
-        # Return slightly negative sentiment on error (market often defaults to caution)
-        return 0,0,0,0
+        return 0,0,1,0
 
 def fetch_tweets(stock_name):
     try:
@@ -641,29 +546,27 @@ def fetch_tweets(stock_name):
         start_str = today.strftime('%Y-%m-%d')
         end_str = tomorrow.strftime('%Y-%m-%d')
         
+        api = API()
         query = f"${stock_name} OR #{stock_name} OR {stock_name} stock lang:en since:{start_str} until:{end_str}"
-        command = ["snscrape", "--jsonl", "--max-results", "50", "twitter-search", query]
-        
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        output, error = process.communicate()
-        
         tweets = []
-        for line in output.strip().split('\n'):
-            if line:
-                tweet_data = json.loads(line)
-                tweet_date = datetime.strptime(tweet_data['date'].split('T')[0], '%Y-%m-%d').date()
-                if tweet_date == today:
-                    sentiment = analyzer.polarity_scores(tweet_data['content'])
+        
+        async def search_tweets():
+            async for tweet in api.search(query, limit=50):
+                if tweet.date.date() == today:
+                    sentiment = analyzer.polarity_scores(tweet.rawContent)
                     tweets.append({
-                        'text': tweet_data['content'],
-                        'link': tweet_data.get('url', ''),
+                        'text': tweet.rawContent,
+                        'link': f"https://twitter.com/i/status/{tweet.id}",
                         'sentiment': {
                             'compound': round(sentiment['compound'], 4),
                             'negative': round(sentiment['neg'], 4),
                             'neutral': round(sentiment['neu'], 4),
                             'positive': round(sentiment['pos'], 4)
-                        }
+                        },
+                        'date': tweet.date.strftime('%Y-%m-%d')
                     })
+        
+        asyncio.run(search_tweets())
         
         print(f"Found {len(tweets)} tweets for {stock_name} today")
         return tweets if tweets else [{'text': 'No tweets found for today', 'link': '', 'sentiment': {'compound': 0, 'negative': 0, 'neutral': 0, 'positive': 0}}]
@@ -779,7 +682,7 @@ def get_historical_data(symbol, days):
             'Date': 'N/A', 'Close': 0, 'MA7': 0, 'MA10': 0, 'MA20': 0,
             'MACD': 0, 'upper_band': 0, 'lower_band': 0, 'EMA': 0
         }]
-    
+
 @app.route('/predict/')
 def index():
     return render_template('index.html', stocks=STOCKS)
@@ -796,68 +699,14 @@ def predict(stock_name):
     if days < 1:
         days = 30
 
-    # Fetch sentiment data
+    # Fetch sentiment data (tweets and news combined)
     print(f"Starting sentiment data fetch for {stock_name}...")
     sentiment_texts = fetch_sentiment_data(stock_name)
     sentiment_score, neg, neu, pos = get_sentiment_scores(sentiment_texts)
 
-    # Fetch tweets for today
+    # Fetch tweets and news for display
     tweets = fetch_tweets(stock_name)
     news = fetch_news_data(stock_name)
-
-    # Calculate tweet sentiment
-    tweet_compound = 0
-    tweet_neg = 0
-    tweet_neu = 0
-    tweet_pos = 0
-    if tweets and isinstance(tweets, list) and any(t.get('sentiment') for t in tweets):
-        tweet_compounds = [t['sentiment']['compound'] for t in tweets if t.get('sentiment')]
-        tweet_negs = [t['sentiment']['negative'] for t in tweets if t.get('sentiment')]
-        tweet_neus = [t['sentiment']['neutral'] for t in tweets if t.get('sentiment')]
-        tweet_poss = [t['sentiment']['positive'] for t in tweets if t.get('sentiment')]
-        if tweet_compounds:
-            tweet_compound = np.mean(tweet_compounds)
-            tweet_neg = np.mean(tweet_negs)
-            tweet_neu = np.mean(tweet_neus)
-            tweet_pos = np.mean(tweet_poss)
-            print(f"Tweet sentiment - compound: {tweet_compound:.4f}, neg: {tweet_neg:.4f}, neu: {tweet_neu:.4f}, pos: {tweet_pos:.4f}")
-
-    # Calculate news sentiment
-    news_compound = 0
-    news_neg = 0
-    news_neu = 0
-    news_pos = 0
-    if news and isinstance(news, list) and any(n.get('sentiment') for n in news):
-        news_compounds = [n['sentiment']['compound'] for n in news if n.get('sentiment')]
-        news_negs = [n['sentiment']['negative'] for n in news if n.get('sentiment')]
-        news_neus = [n['sentiment']['neutral'] for n in news if n.get('sentiment')]
-        news_poss = [n['sentiment']['positive'] for n in news if n.get('sentiment')]
-        if news_compounds:
-            news_compound = np.mean(news_compounds)
-            news_neg = np.mean(news_negs)
-            news_neu = np.mean(news_neus)
-            news_pos = np.mean(news_poss)
-            print(f"News sentiment - compound: {news_compound:.4f}, neg: {news_neg:.4f}, neu: {news_neu:.4f}, pos: {news_pos:.4f}")
-
-    # Initialize final sentiment variables with default values
-    final_compound = tweet_compound  # Default to tweet sentiment
-    final_neg = tweet_neg
-    final_neu = tweet_neu
-    final_pos = tweet_pos
-
-    # Fallback logic: Use news sentiment if tweet sentiment is all zeros and news has data
-    if (tweet_compound == 0 and tweet_neg == 0 and tweet_neu == 0 and tweet_pos == 0) and \
-       (news_compound != 0 or news_neg != 0 or news_neu != 0 or news_pos != 0):
-        final_compound = news_compound
-        final_neg = news_neg
-        final_neu = news_neu
-        final_pos = news_pos
-    # Final fallback: Use sentiment from fetch_sentiment_data if available
-    elif sentiment_score != 0 or neg != 0 or neu != 0 or pos != 0:
-        final_compound = sentiment_score
-        final_neg = neg
-        final_neu = neu
-        final_pos = pos
 
     # Fetch technical indicators
     print(f"Fetching technical indicators for {stock_name}...")
@@ -875,7 +724,7 @@ def predict(stock_name):
             indicators['MA7'], indicators['MA20'], indicators['MA10'], indicators['MACD'],
             indicators['20SD'], indicators['upper_band'], indicators['lower_band'],
             indicators['EMA'], indicators['logmomentum'],
-            final_compound, final_neg, final_neu, final_pos
+            sentiment_score, neg, neu, pos
         ]
 
         actual_close = indicators['Close']
@@ -899,10 +748,10 @@ def predict(stock_name):
         "predicted_date": (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d'),
         "technical_indicators": {k: round(v, 4) if isinstance(v, float) else v for k, v in indicators.items()},
         "sentiment_score": {
-            "compound": round(final_compound, 4),
-            "negative": round(final_neg, 4),
-            "neutral": round(final_neu, 4),
-            "positive": round(final_pos, 4)
+            "compound": round(sentiment_score, 4),
+            "negative": round(neg, 4),
+            "neutral": round(neu, 4),
+            "positive": round(pos, 4)
         },
         "processing_time_seconds": round(elapsed_time, 2),
         "tweets": tweets,
@@ -915,4 +764,3 @@ def predict(stock_name):
 
 if __name__ == '__main__':
     app.run(debug=False)
-

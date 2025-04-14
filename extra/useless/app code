@@ -1,0 +1,325 @@
+
+# import time
+# from functools import lru_cache
+# import yfinance as yf
+# import pandas_ta as ta
+# from flask import Flask, jsonify
+# import numpy as np 
+# import pickle
+# from tensorflow.keras.models import load_model
+# import pandas as pd
+# import snscrape.modules.twitter as sntwitter
+# from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+# import json
+# import subprocess
+
+
+# # Load model and scalers
+# model = load_model("saved_model/lstm_stock_model.h5")
+
+# with open("saved_model/scaler_X.pkl", "rb") as f:
+#     scaler_X = pickle.load(f)
+
+# with open("saved_model/scaler_y.pkl", "rb") as f:
+#     scaler_y = pickle.load(f)
+
+# analyzer = SentimentIntensityAnalyzer()
+# app = Flask(__name__)
+
+# # Supported stocks
+# STOCKS = ['TSLA', 'MSFT', 'PG', 'META', 'AMZN', 'GOOG', 'AMD', 'AAPL',
+#           'NFLX', 'TSM', 'KO', 'F', 'COST', 'DIS', 'VZ', 'CRM', 'INTC', 'BA',
+#           'BX', 'NOC', 'PYPL', 'ENPH', 'NIO', 'ZS', 'XPEV']
+
+# FEATURE_TEMPLATE = ['MA7', 'MA20', 'MA10', 'MACD', '20SD', 'upper_band', 'lower_band',
+#                     'EMA', 'logmomentum', 'sentiment_score', 'Negative', 'Neutral', 'Positive']
+
+# @lru_cache(maxsize=32)
+# def fetch_recent_tweets(stock_name):
+#     query = f'{stock_name} stock since:2024-01-01'
+#     command = ['snscrape', '--jsonl', '--max-results', '30', 'twitter-search', query]
+    
+#     try:
+#         result = subprocess.run(command, capture_output=True, text=True)
+#         if result.returncode != 0:
+#             print(f"snscrape error: {result.stderr}")
+#             return []
+        
+#         tweets = []
+#         for line in result.stdout.splitlines():
+#             tweet_json = json.loads(line)
+#             tweets.append(tweet_json.get("content", ""))
+
+#         print(f"Fetched {len(tweets)} tweets for {stock_name}")
+#         return tweets
+
+#     except Exception as e:
+#         print(f"snscrape exception: {e}")
+#         return []
+
+
+
+# def get_sentiment_scores(tweets):
+#     compound_scores = [analyzer.polarity_scores(tweet)['compound'] for tweet in tweets]
+#     sentiment_score = np.mean(compound_scores) if compound_scores else 0
+#     positive = np.mean([analyzer.polarity_scores(t)['pos'] for t in tweets]) if tweets else 0
+#     neutral = np.mean([analyzer.polarity_scores(t)['neu'] for t in tweets]) if tweets else 0
+#     negative = np.mean([analyzer.polarity_scores(t)['neg'] for t in tweets]) if tweets else 0
+#     return sentiment_score, negative, neutral, positive
+
+
+# def get_technical_indicators(symbol):
+#     try:
+#         df = yf.download(symbol, period='60d', interval='1d')
+#         if len(df) < 20:
+#             raise ValueError(f"Not enough data points for {symbol}, only got {len(df)}")
+
+#         features = {}
+#         features['MA7'] = float(df['Close'].rolling(window=7).mean().iloc[-1])
+#         features['MA10'] = float(df['Close'].rolling(window=10).mean().iloc[-1])
+#         features['MA20'] = float(df['Close'].rolling(window=20).mean().iloc[-1])
+
+#         exp1 = df['Close'].ewm(span=12, adjust=False).mean()
+#         exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+#         macd_line = exp1 - exp2
+#         features['MACD'] = float(macd_line.iloc[-1])
+
+#         features['20SD'] = float(df['Close'].rolling(window=20).std().iloc[-1])
+
+#         middle_band = df['Close'].rolling(window=20).mean()
+#         std_dev = df['Close'].rolling(window=20).std()
+#         features['upper_band'] = float((middle_band + (std_dev * 2)).iloc[-1])
+#         features['lower_band'] = float((middle_band - (std_dev * 2)).iloc[-1])
+
+#         features['EMA'] = float(df['Close'].ewm(span=10, adjust=False).mean().iloc[-1])
+
+#         current_close = float(df['Close'].iloc[-1])
+#         past_close = float(df['Close'].iloc[-11]) if len(df) >= 11 else float(df['Close'].iloc[0])
+#         momentum = current_close - past_close
+#         features['logmomentum'] = (
+#             float(np.log1p(momentum)) if momentum > 0 else
+#             float(-np.log1p(abs(momentum))) if momentum < 0 else 0.0
+#         )
+
+#         features['Close'] = float(current_close)
+
+#         if any(v is None or (isinstance(v, float) and np.isnan(v)) for v in features.values()):
+#             missing = [k for k, v in features.items() if v is None or (isinstance(v, float) and np.isnan(v))]
+#             raise ValueError(f"Missing values in indicators: {missing}")
+
+#         return features
+
+#     except Exception as e:
+#         print(f"Error in technical indicators: {e}")
+#         return None
+
+
+# @app.route('/predict/<stock_name>')
+# def predict(stock_name):
+#     stock_name = stock_name.upper()
+#     if stock_name not in STOCKS:
+#         return jsonify({"error": "Unsupported stock symbol"}), 400
+
+#     tweets = fetch_recent_tweets(stock_name)
+#     print(f"Fetched {len(tweets)} tweets for {stock_name}:")
+#     for t in tweets:
+#         print("-", t)
+
+#     sentiment_score, neg, neu, pos = get_sentiment_scores(tweets)
+
+#     indicators = get_technical_indicators(stock_name)
+#     if indicators is None:
+#         return jsonify({"error": "Failed to fetch technical indicators"}), 500
+
+#     try:
+#         # Create feature vector excluding 'Close' for prediction
+#         full_feature_vector = [
+#             indicators['MA7'], indicators['MA20'], indicators['MA10'], indicators['MACD'],
+#             indicators['20SD'], indicators['upper_band'], indicators['lower_band'],
+#             indicators['EMA'], indicators['logmomentum'],
+#             sentiment_score, neg, neu, pos
+#         ]
+
+#         actual_close = indicators['Close']
+#         features_scaled = scaler_X.transform(np.array(full_feature_vector).reshape(1, -1))
+#         scaled_prediction = model.predict(np.expand_dims(features_scaled, axis=0))[0][0]
+#         prediction = scaler_y.inverse_transform([[scaled_prediction]])[0][0]
+
+#     except Exception as e:
+#         return jsonify({"error": str(e)}), 500
+
+#     return jsonify({
+#         "stock": stock_name,
+#         "predicted_price": round(prediction, 2),
+#         "actual_close": round(actual_close, 2),
+#         "technical_indicators": indicators,
+#         "sentiment_score": {
+#             "compound": round(sentiment_score, 4),
+#             "negative": round(neg, 4),
+#             "neutral": round(neu, 4),
+#             "positive": round(pos, 4)
+#         }
+#     })
+
+
+# if __name__ == '__main__':
+#     app.run(debug=True)
+
+
+
+# import time
+# from functools import lru_cache
+# import yfinance as yf
+# import pandas_ta as ta
+# from flask import Flask, jsonify
+# import numpy as np
+# import pickle
+# from tensorflow.keras.models import load_model
+# import tweepy
+# from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+# import pandas as pd
+
+# # Load model and scalers
+# model = load_model("saved_model/lstm_stock_model.h5")
+
+# with open("saved_model/scaler_X.pkl", "rb") as f:
+#     scaler_X = pickle.load(f)
+
+# with open("saved_model/scaler_y.pkl", "rb") as f:
+#     scaler_y = pickle.load(f)
+
+# analyzer = SentimentIntensityAnalyzer()
+# app = Flask(__name__)
+
+# # Twitter API setup
+# BEARER_TOKEN = """AAAAAAAAAAAAAAAAAAAAAOnv0QEAAAAA2FQuBAU6DYLIFXw4c%2FojHZ4M1co%3Dr7o7NSNjI04DlhZCf92J3S3ibraK6rkrFebW4avytTLczTQOYr"""
+# client = tweepy.Client(bearer_token=BEARER_TOKEN)
+
+# # Supported stocks
+# STOCKS = ['TSLA', 'MSFT', 'PG', 'META', 'AMZN', 'GOOG', 'AMD', 'AAPL',
+#           'NFLX', 'TSM', 'KO', 'F', 'COST', 'DIS', 'VZ', 'CRM', 'INTC', 'BA',
+#           'BX', 'NOC', 'PYPL', 'ENPH', 'NIO', 'ZS', 'XPEV']
+
+# FEATURE_TEMPLATE = ['MA7', 'MA20', 'MA10', 'MACD', '20SD', 'upper_band', 'lower_band',
+#                     'EMA', 'logmomentum', 'sentiment_score', 'Negative', 'Neutral', 'Positive']
+
+
+# @lru_cache(maxsize=32)
+# def fetch_recent_tweets(stock_name):
+#     query = f"{stock_name} stock lang:en -is:retweet"
+#     try:
+#         response = client.search_recent_tweets(query=query, max_results=30)
+#         return [tweet.text for tweet in response.data] if response.data else []
+#     except Exception as e:
+#         print(f"Twitter Error: {e}")
+#         return []
+
+
+# def get_sentiment_scores(tweets):
+#     compound_scores = [analyzer.polarity_scores(tweet)['compound'] for tweet in tweets]
+#     sentiment_score = np.mean(compound_scores) if compound_scores else 0
+#     positive = np.mean([analyzer.polarity_scores(t)['pos'] for t in tweets]) if tweets else 0
+#     neutral = np.mean([analyzer.polarity_scores(t)['neu'] for t in tweets]) if tweets else 0
+#     negative = np.mean([analyzer.polarity_scores(t)['neg'] for t in tweets]) if tweets else 0
+#     return sentiment_score, negative, neutral, positive
+
+
+# def get_technical_indicators(symbol):
+#     try:
+#         df = yf.download(symbol, period='60d', interval='1d')
+#         if len(df) < 20:
+#             raise ValueError(f"Not enough data points for {symbol}, only got {len(df)}")
+
+#         features = {}
+#         features['MA7'] = float(df['Close'].rolling(window=7).mean().iloc[-1])
+#         features['MA10'] = float(df['Close'].rolling(window=10).mean().iloc[-1])
+#         features['MA20'] = float(df['Close'].rolling(window=20).mean().iloc[-1])
+
+#         exp1 = df['Close'].ewm(span=12, adjust=False).mean()
+#         exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+#         macd_line = exp1 - exp2
+#         features['MACD'] = float(macd_line.iloc[-1])
+
+#         features['20SD'] = float(df['Close'].rolling(window=20).std().iloc[-1])
+
+#         middle_band = df['Close'].rolling(window=20).mean()
+#         std_dev = df['Close'].rolling(window=20).std()
+#         features['upper_band'] = float((middle_band + (std_dev * 2)).iloc[-1])
+#         features['lower_band'] = float((middle_band - (std_dev * 2)).iloc[-1])
+
+#         features['EMA'] = float(df['Close'].ewm(span=10, adjust=False).mean().iloc[-1])
+
+#         current_close = float(df['Close'].iloc[-1])
+#         past_close = float(df['Close'].iloc[-11]) if len(df) >= 11 else float(df['Close'].iloc[0])
+#         momentum = current_close - past_close
+#         features['logmomentum'] = (
+#             float(np.log1p(momentum)) if momentum > 0 else
+#             float(-np.log1p(abs(momentum))) if momentum < 0 else 0.0
+#         )
+
+#         features['Close'] = float(current_close)
+
+#         if any(v is None or (isinstance(v, float) and np.isnan(v)) for v in features.values()):
+#             missing = [k for k, v in features.items() if v is None or (isinstance(v, float) and np.isnan(v))]
+#             raise ValueError(f"Missing values in indicators: {missing}")
+
+#         return features
+
+#     except Exception as e:
+#         print(f"Error in technical indicators: {e}")
+#         return None
+
+
+# @app.route('/predict/<stock_name>')
+# def predict(stock_name):
+#     stock_name = stock_name.upper()
+#     if stock_name not in STOCKS:
+#         return jsonify({"error": "Unsupported stock symbol"}), 400
+
+#     tweets = fetch_recent_tweets(stock_name)
+#     sentiment_score, neg, neu, pos = get_sentiment_scores(tweets)
+
+#     indicators = get_technical_indicators(stock_name)
+#     if indicators is None:
+#         return jsonify({"error": "Failed to fetch technical indicators"}), 500
+
+#     try:
+#         # Create feature vector excluding 'Close' for prediction
+#         full_feature_vector = [
+#             indicators['MA7'], indicators['MA20'], indicators['MA10'], indicators['MACD'],
+#             indicators['20SD'], indicators['upper_band'], indicators['lower_band'],
+#             indicators['EMA'], indicators['logmomentum'],
+#             sentiment_score, neg, neu, pos
+#         ]
+
+#         # Store Close price for comparison (optional)
+#         actual_close = indicators['Close']
+
+#         # Scale input
+#         features_scaled = scaler_X.transform(np.array(full_feature_vector).reshape(1, -1))
+
+#         # Predict
+#         scaled_prediction = model.predict(np.expand_dims(features_scaled, axis=0))[0][0]
+
+#         # Inverse scale
+#         prediction = scaler_y.inverse_transform([[scaled_prediction]])[0][0]
+
+#     except Exception as e:
+#         return jsonify({"error": str(e)}), 500
+
+#     return jsonify({
+#         "stock": stock_name,
+#         "predicted_price": round(prediction, 2),
+#         "actual_close": round(actual_close, 2),
+#         "technical_indicators": indicators,
+#         "sentiment_score": {
+#             "compound": round(sentiment_score, 4),
+#             "negative": round(neg, 4),
+#             "neutral": round(neu, 4),
+#             "positive": round(pos, 4)
+#         }
+#     })
+
+
+# if __name__ == '__main__':
+#     app.run(debug=True)
