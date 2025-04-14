@@ -26,7 +26,7 @@ from sklearn.model_selection import train_test_split
 
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional, LayerNormalization
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional, BatchNormalization
 from tensorflow.keras.regularizers import l2
 from tensorflow.keras.callbacks import EarlyStopping
 
@@ -140,7 +140,7 @@ def train_model(stock):
     try:
         end_date = datetime.now()
        # start_date = end_date - timedelta(days=365) start=start_date, end=end_date
-        stock_df = yf.download(stock_name, period='180d' , progress=False)
+        stock_df = yf.download(stock_name, period='90d' , progress=False)
         
         if stock_df.empty:
             raise ValueError(f"No data fetched for {stock_name}")
@@ -308,7 +308,7 @@ def train_model(stock):
     
     print(f"Created {len(X)} sequences for training")
 
-    split = int(0.85 * len(X))
+    split = int(0.9 * len(X))
     X_train, X_test = X[:split], X[split:]
     y_train, y_test = y[:split], y[split:]
 
