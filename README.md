@@ -1,8 +1,9 @@
-1.Create a twitter account
-2.Create a accounts.txt which contains your account information -- username:password:email:password (format)
-3.run -- twscrape add_accounts accounts.txt username:password:email:password
-4.twscrape login
-5.py app.py
+1. run -- pip install -r requirements.txt
+2.Create a twitter account
+3.Create a accounts.txt which contains your account information -- username:password:email:password (format)
+4.run -- twscrape add_accounts accounts.txt username:password:email:password
+5.twscrape login
+6.py app.py
 
 Description:
 
